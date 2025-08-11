@@ -1,21 +1,35 @@
 import {Plugin, SettingsTypes} from "@highlite/plugin-api";
 import { PanelManager } from "@highlite/plugin-api";
-import ExampleHTML from "../resources/html/html.html";
-import ExampleCSS from "../resources/css/base.css";
-import ExampleImage from "../resources/images/icon.png";
-import ExampleSound from "../resources/sounds/sample.mp3";
+import IronModeCss from "../resources/css/ironmode.css";
+
+// Import regular iron helm icons
+import IMHelm from "../resources/images/IMHelm.png";
+import HCIMHelm from "../resources/images/HCIMHelm.png"; //TODO
+import UIMHelm from "../resources/images/UIMHelm.png"; //TODO
+import HCUIMHelm from "../resources/images/HCUIMHelm.png"; //TODO
+
+// Import group iron helm icons
+import GIMHelm from "../resources/images/GIMHelm.png";
+import HCGIMHelm from "../resources/images/HCGIMHelm.png"; //TODO
+import UGIMHelm from "../resources/images/UGIMHelm.png"; //TODO
+import HCUGIMHelm from "../resources/images/HCUGIMHelm.png"; //TODO
 
 export default class IronMode extends Plugin {
     panelManager: PanelManager = new PanelManager();
     pluginName = "Iron Mode";
     author: string = "Zora";
+    private chatObserver: MutationObserver | null = null;
+    private playerStatusCache: Map<string, { status: string; timestamp: number }> = new Map(); // Cache for username -> {status, timestamp}
+    private updateInterval: number | null = null;
+    private readonly CACHE_TTL = 15 * 60 * 1000; // 15 minutes in milliseconds
+    private updateButtonCooldownTimeout: number | null = null;
 
     constructor() {
         super()
         this.settings.alertMessage = {
-            text: 'Alert!',
-            type: SettingsTypes.text,
-            value: 'If you enable "Show Helm icons in chat", your username and iron settings will be sent to and stored in a remote database.',
+            text: 'Notice!',
+            type: SettingsTypes.warning,
+            value: 'If you enable "Show Helm icons in chat" and "I am an Iron", your username and iron settings are stored for chat functionality.',
             disabled: false,
             hidden: false,
             callback: () => {},
@@ -23,7 +37,7 @@ export default class IronMode extends Plugin {
 
         this.settings.disclaimerMessage = {
             text: 'Disclaimer!',
-            type: SettingsTypes.text,
+            type: SettingsTypes.info,
             value: 'This plugin relies on player trust! It\'s entirely possible to get around restrictions even when using this plugin.',
             disabled: false,
             hidden: false,
@@ -41,7 +55,18 @@ export default class IronMode extends Plugin {
             text: 'Show Helms in Chat',
             type: SettingsTypes.checkbox,
             value: false,
-            callback: () => {},
+            callback: () => {
+                if (this.settings.sendRecieveData.value) {
+                    this.startPeriodicUpdates();
+                } else {
+                    this.stopPeriodicUpdates();
+                }
+            },
+            onLoaded: () => {
+                if (this.settings.sendRecieveData.value) {
+                    this.startPeriodicUpdates();
+                }
+            }, 
         };
 
         this.settings.isIron = {
@@ -75,7 +100,7 @@ export default class IronMode extends Plugin {
 
         this.settings.groupNames = {
             text: 'Group Mates',
-            type: SettingsTypes.text,
+            type: SettingsTypes.textarea,
             value: '',
             hidden: true, // Initially hidden until isIron is true
             callback: () => {},
@@ -86,7 +111,21 @@ export default class IronMode extends Plugin {
             type: SettingsTypes.button,
             value: 'Update',
             hidden: true, // Initially hidden until isIron is true
-            callback: () => {},
+            callback: () => {
+                this.log("Manual update triggered");
+                this.updatePlayerStatusData(); // POST user data to database
+                this.playerStatusCache.clear(); // Clear cache
+                
+                // Disable button and start cooldown
+                this.settings.updateButton.disabled = true;
+                this.settings.updateButton.value = 'Please wait 5 minutes';
+                
+                this.updateButtonCooldownTimeout = setTimeout(() => {
+                    this.settings.updateButton.disabled = false;
+                    this.settings.updateButton.value = 'Update';
+                    this.updateButtonCooldownTimeout = null;
+                }, 60 * 1000); // 1 minute
+            },
         };
 
         this.settings.uuid = {
@@ -145,10 +184,322 @@ export default class IronMode extends Plugin {
     
     start(): void {
         this.log("IronMode started");
+        this.injectStyles();
+        this.initializeChatObserver();
+        
+        // Start the periodic update cycle if helm display is enabled
+        if (this.settings.sendRecieveData.value) {
+            this.startPeriodicUpdates();
+        }
     }
 
     stop(): void {
         this.log("IronMode stopped");
+        this.disconnectChatObserver();
+        this.removeStyles();
+        this.stopPeriodicUpdates();
+        
+        // Clear button cooldown if active
+        if (this.updateButtonCooldownTimeout) {
+            clearTimeout(this.updateButtonCooldownTimeout);
+            this.updateButtonCooldownTimeout = null;
+            this.settings.updateButton.disabled = false;
+            this.settings.updateButton.value = 'Update';
+        }
+    }
+
+    // Start periodic updates for player status data
+    private startPeriodicUpdates(): void {
+        if (this.playerStatusCache.size === 0) {
+            this.log("No player status data available, fetching initial data...");
+            this.updatePlayerStatusData();
+        }
+        
+        // Set up periodic updates every 5 minutes
+        if (!this.updateInterval) {
+            this.updateInterval = setInterval(() => {
+                if (this.settings.sendRecieveData.value) {
+                    this.updatePlayerStatusData();
+                }
+            }, 5 * 60 * 1000); // 5 minutes
+        }
+    }
+
+    // Stop periodic updates
+    private stopPeriodicUpdates(): void {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = null;
+        }
+    }
+
+    // Remove injected styles
+    private removeStyles(): void {
+        const existingStyles = document.querySelectorAll('style[data-iron-mode-plugin]');
+        existingStyles.forEach(style => style.remove());
+    }
+
+    // Inject CSS styles for helm icons
+    private injectStyles(): void {
+        // Remove existing styles first to avoid duplicates
+        this.removeStyles();
+        
+        const styleElement = document.createElement('style');
+        styleElement.setAttribute('data-iron-mode-plugin', 'true');
+        styleElement.textContent = IronModeCss;
+
+        document.head.appendChild(styleElement);
+    }
+
+    // Initialize the chat message observer
+    private initializeChatObserver(): void {
+        // Find the chat container
+        const chatContainer = document.querySelector('#hs-public-message-list');
+        
+        if (!chatContainer) {
+            this.log("Chat container (#hs-public-message-list) not found, retrying in 2 seconds...");
+            setTimeout(() => this.initializeChatObserver(), 2000);
+            return;
+        }
+
+        this.log("Chat container found, setting up observer");
+
+        // Create a MutationObserver to watch for new chat messages
+        this.chatObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                if (this.settings.sendRecieveData.value) {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const element = node as Element;
+                            
+                            // Check if this is a chat message container
+                            if (element.classList.contains('hs-chat-message-container')) {
+                                this.processChatMessage(element);
+                            }
+                            
+                            // Also check for chat messages that might be added within added nodes
+                            const chatMessages = element.querySelectorAll('.hs-chat-message-container');
+                            chatMessages.forEach(msg => this.processChatMessage(msg));
+                        }
+                    });
+                }
+            });
+        });
+
+        // Start observing the chat container for child additions
+        this.chatObserver.observe(chatContainer, {
+            childList: true,
+            subtree: true
+        });
+        
+        // Also process any existing chat messages that might already be in the DOM
+        const existingMessages = chatContainer.querySelectorAll('.hs-chat-message-container');
+        this.log(`Found ${existingMessages.length} existing chat messages to process`);
+        existingMessages.forEach(msg => this.processChatMessage(msg));
+    }
+
+    // Disconnect the chat observer
+    private disconnectChatObserver(): void {
+        if (this.chatObserver) {
+            this.chatObserver.disconnect();
+            this.chatObserver = null;
+        }
+    }
+
+    // Process a new chat message and inject helm icon if needed
+    private processChatMessage(messageElement: Element): void {
+        try {
+            // Check if this message hasn't been processed already
+            if (messageElement.hasAttribute('data-iron-mode-processed')) {
+                return;
+            }
+
+            // Mark as processed to avoid duplicate processing
+            messageElement.setAttribute('data-iron-mode-processed', 'true');
+
+            // Find the username span (the one with pre-text class that contains the username)
+            const usernameSpan = messageElement.querySelector('.hs-chat-menu__pre-text');
+            
+            if (!usernameSpan) {
+                return;
+            }
+
+            // Extract username (remove the colon at the end)
+            const usernameText = usernameSpan.textContent?.replace(':', '').trim();
+            
+            if (!usernameText) {
+                return;
+            }
+
+            // Get the iron status for this user
+            this.getIronStatusForUser(usernameText).then(ironStatus => {
+                if (ironStatus) {
+                    this.log(`Adding ${ironStatus} helmet icon to ${usernameText}'s message.`);
+                    this.injectHelmIcon(usernameSpan, ironStatus);
+                }
+            });
+
+        } catch (error) {
+            this.log(`Error processing chat message: ${error}`);
+        }
+    }
+
+    // Get iron status for a user from stored player data
+    private async getIronStatusForUser(username: string): Promise<string | null> {
+        const normalizedUsername = username.toLowerCase();
+        const now = Date.now();
+        
+        // Check cache first
+        const cachedEntry = this.playerStatusCache.get(normalizedUsername);
+        if (cachedEntry) {
+            if ((now - cachedEntry.timestamp) < this.CACHE_TTL) {
+                return cachedEntry.status;
+            } else {
+                // Remove expired entry
+                this.playerStatusCache.delete(normalizedUsername);
+            }
+        }
+        
+        try {
+            const response = await fetch('https://highl1te-hardcore-api.bgscrew.com/IronStatus/lookup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify([normalizedUsername])
+            });
+            
+            const data = await response.json();
+            const status = data[normalizedUsername] || null;
+
+            // Cache the result
+            if (status) {
+                this.playerStatusCache.set(normalizedUsername, { status, timestamp: now });
+            }
+            
+            return status;
+        } catch (error) {
+            return null;
+        }
+    }
+
+
+    private async updatePlayerStatusData(): Promise<void> {
+        this.log("Updating player status data...");
+        // Get players name from hook
+        const normalizedUsername = this.gameHooks.EntityManager.Instance.MainPlayer._name.toLowerCase();
+
+        try {
+            // Collect player settings data
+            const playerSettings = {
+                username: normalizedUsername,
+                uuid: this.settings.uuid.value,
+                isIron: this.settings.isIron.value,
+                isHardcore: this.settings.isHardcore.value,
+                isUltimate: this.settings.isUltimate.value,
+                groupMates: this.settings.groupNames.value ? [this.settings.groupNames.value] : [],
+            };
+
+            // Parse playerSettings into a json to send to server
+            const playerSettingsJson = JSON.stringify(playerSettings);
+
+            // POST to database
+            await fetch('http://highl1te-hardcore-api.bgscrew.com/IronStatus', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: playerSettingsJson
+            });
+
+        } catch (error) {
+            this.log(`Error fetching player status data: ${error}`);
+        }
+    }
+
+    // Inject the appropriate helm icon before the username
+    private injectHelmIcon(usernameSpan: Element, ironStatus: string): void {
+        // Check if icon already exists
+        if (usernameSpan.querySelector('.iron-mode-helm-icon')) {
+            return;
+        }
+
+        // Create the helm icon element
+        const helmIcon = document.createElement('img');
+        helmIcon.className = 'iron-mode-helm-icon';
+        helmIcon.style.width = '16px';
+        helmIcon.style.height = '16px';
+        helmIcon.style.verticalAlign = 'middle';
+        helmIcon.style.display = 'inline-block';
+        
+        // Set the appropriate icon and color based on iron status
+        const iconInfo = this.getHelmIconInfo(ironStatus);
+        helmIcon.src = iconInfo.src;
+        helmIcon.alt = `${ironStatus} helm`;
+        helmIcon.title = `${iconInfo.description}`;
+
+        // Insert the icon at the beginning of the username span
+        usernameSpan.insertBefore(helmIcon, usernameSpan.firstChild);
+    }
+
+    // Get helm icon information based on iron status
+    private getHelmIconInfo(ironStatus: string): { src: string; color?: string; description: string } {
+
+        switch (ironStatus) {
+            case 'IM': // Regular Iron
+                return {
+                    src: IMHelm,
+                    description: 'Ironman'
+                };
+            
+            case 'HCIM': // Hardcore Iron
+                return {
+                    src: HCIMHelm,
+                    description: 'Hardcore Ironman'
+                };
+            
+            case 'UIM': // Ultimate Iron
+                return {
+                    src: UIMHelm,
+                    description: 'Ultimate Ironman'
+                };
+            
+            case 'HCUIM': // Hardcore Ultimate Iron
+                return {
+                    src: HCUIMHelm,
+                    description: 'Hardcore Ultimate Ironman'
+                };
+            
+            case 'GIM': // Group Iron
+                return {
+                    src: GIMHelm,
+                    description: 'Group Ironman'
+                };
+            
+            case 'HCGIM': // Hardcore Group Iron
+                return {
+                    src: HCGIMHelm,
+                    description: 'Hardcore Group Ironman'
+                };
+            
+            case 'UGIM': // Ultimate Group Iron
+                return {
+                    src: UGIMHelm,
+                    description: 'Ultimate Group Ironman'
+                };
+            
+            case 'HCUGIM': // Hardcore Ultimate Group Iron
+                return {
+                    src: HCUGIMHelm,
+                    description: 'Hardcore Ultimate Group Ironman'
+                };
+            
+            default:
+                return {
+                    src: IMHelm, // Default to regular iron helm
+                    description: 'Unknown Iron Status'
+                };
+        }
     }
 }
 

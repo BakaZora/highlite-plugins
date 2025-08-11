@@ -1,0 +1,19 @@
+@scope {
+    /* Helm icon styles for chat messages */
+    .iron-mode-helm-icon {
+        width: 16px !important;
+        height: 16px !important;
+        margin-right: 4px !important;
+        vertical-align: middle !important;
+        display: inline-block !important;
+        image-rendering: pixelated !important; /* For crisp pixel art icons */
+        image-rendering: -moz-crisp-edges !important;
+        image-rendering: crisp-edges !important;
+    }
+
+    /* Ensure chat messages with helms align properly */
+    .hs-chat-message-container[data-iron-mode-processed="true"] .hs-chat-menu__pre-text {
+        display: inline-flex !important;
+        align-items: center !important;
+    }
+}
