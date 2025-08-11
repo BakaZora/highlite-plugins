@@ -19,6 +19,7 @@ export default class IronMode extends Plugin {
     pluginName = "Iron Mode";
     author: string = "Zora";
     private chatObserver: MutationObserver | null = null;
+    private contextMenuObserver: MutationObserver | null = null;
     private playerStatusCache: Map<string, { status: string; timestamp: number }> = new Map(); // Cache for username -> {status, timestamp}
     private updateInterval: number | null = null;
     private readonly CACHE_TTL = 15 * 60 * 1000; // 15 minutes in milliseconds
@@ -41,14 +42,7 @@ export default class IronMode extends Plugin {
             value: 'This plugin relies on player trust! It\'s entirely possible to get around restrictions even when using this plugin.',
             disabled: false,
             hidden: false,
-            callback: () => {
-                // Debug method to display UUID
-                if (this.settings.disclaimerMessage.value == 'UUID') {
-                    this.settings.uuid.hidden = false;
-                } else {
-                    this.settings.uuid.hidden = true;  
-                }
-            },
+            callback: () => {},
         };
 
         this.settings.sendRecieveData = {
@@ -186,6 +180,7 @@ export default class IronMode extends Plugin {
         this.log("IronMode started");
         this.injectStyles();
         this.initializeChatObserver();
+        this.initializeContextMenuObserver();
         
         // Start the periodic update cycle if helm display is enabled
         if (this.settings.sendRecieveData.value) {
@@ -196,6 +191,7 @@ export default class IronMode extends Plugin {
     stop(): void {
         this.log("IronMode stopped");
         this.disconnectChatObserver();
+        this.disconnectContextMenuObserver();
         this.removeStyles();
         this.stopPeriodicUpdates();
         
@@ -303,6 +299,94 @@ export default class IronMode extends Plugin {
         if (this.chatObserver) {
             this.chatObserver.disconnect();
             this.chatObserver = null;
+        }
+    }
+
+    // Initialize the context menu observer
+    private initializeContextMenuObserver(): void {
+        // Find the screen mask container
+        const screenMask = document.querySelector('#hs-screen-mask');
+        
+        if (!screenMask) {
+            this.log("Screen mask (#hs-screen-mask) not found, retrying in 2 seconds...");
+            setTimeout(() => this.initializeContextMenuObserver(), 2000);
+            return;
+        }
+
+        this.log("Screen mask found, setting up context menu observer");
+
+        // Create a MutationObserver to watch for context menu additions
+        this.contextMenuObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                if (this.settings.isIron.value) {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            const element = node as Element;
+                            
+                            // Check if this is a context menu wrapper
+                            if (element.id === 'hs-context-menu-wrapper') {
+                                
+                                this.settings.isIron ?? this.log(`Removing "Trade With" options from non-group members in context menu`);
+                                this.processContextMenu(element);
+                            }
+                            
+                            // Also check for context menus that might be added within added nodes
+                            const contextMenus = element.querySelectorAll('#hs-context-menu-wrapper');
+                            contextMenus.forEach(menu => this.processContextMenu(menu));
+                        }
+                    });
+                }
+            });
+        });
+
+        // Start observing the screen mask for child additions
+        this.contextMenuObserver.observe(screenMask, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    // Disconnect the context menu observer
+    private disconnectContextMenuObserver(): void {
+        if (this.contextMenuObserver) {
+            this.contextMenuObserver.disconnect();
+            this.contextMenuObserver = null;
+        }
+    }
+
+    // Process context menu and remove trade options for iron players
+    private processContextMenu(contextMenuElement: Element): void {
+        try {
+            // Find all context menu items
+            const menuItems = contextMenuElement.querySelectorAll('.hs-context-menu__item');
+            
+            menuItems.forEach((item) => {
+                // Find the action name span within this item
+                const actionNameSpan = item.querySelector('.hs-context-menu__item__action-name');
+                
+                if (actionNameSpan && actionNameSpan.textContent?.trim() === 'Trade With') {
+                    // Get the username for logging purposes
+                    const usernameSpan = item.querySelector('.hs-context-menu__item__entity-name');
+                    const username = usernameSpan?.textContent?.trim() || 'Unknown';
+                    
+                    // Check if this is a group member before hiding
+                    if (this.settings.groupNames.value && this.settings.groupNames.value.toString().toLowerCase().includes(username.toLowerCase())) {
+                        this.log(`Trade option for ${username} is a group member, keeping.`);
+                        return;
+                    }
+                    
+                    this.log(`Hiding "Trade With" option for ${username} from context menu`);
+                    // Hide the element instead of removing it to avoid DOM cleanup issues
+                    (item as HTMLElement).style.display = 'none';
+                    // Also disable pointer events to make it completely non-interactive
+                    (item as HTMLElement).style.pointerEvents = 'none';
+                    // Mark it as hidden by our plugin for potential cleanup later
+                    item.setAttribute('data-iron-mode-hidden', 'true');
+                }
+            });
+
+        } catch (error) {
+            this.log(`Error processing context menu: ${error}`);
         }
     }
 
