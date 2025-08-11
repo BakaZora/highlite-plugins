@@ -317,6 +317,18 @@ export default class IronMode extends Plugin {
             // Mark as processed to avoid duplicate processing
             messageElement.setAttribute('data-iron-mode-processed', 'true');
 
+            // Check if this is a trade message first
+            const tradeMessageSpan = messageElement.querySelector('.hs-text--magenta');
+            if (tradeMessageSpan && this.settings.isIron.value) {
+                const messageText = tradeMessageSpan.textContent?.trim();
+                if (messageText && messageText.includes('wants to trade with you')) {
+                    // Extract username from the trade message
+                    const username = messageText.replace(' wants to trade with you', '').trim();
+                    this.handleTradeMessage(messageElement, username);
+                    return; // Early return after handling trade message
+                }
+            }
+
             // Find the username span (the one with pre-text class that contains the username)
             const usernameSpan = messageElement.querySelector('.hs-chat-menu__pre-text');
             
@@ -341,6 +353,48 @@ export default class IronMode extends Plugin {
 
         } catch (error) {
             this.log(`Error processing chat message: ${error}`);
+        }
+    }
+
+    // Handle trade messages for iron players
+    private handleTradeMessage(messageElement: Element, username: string): void {
+        try {
+            // If the trader is a group member, return early
+            if (this.settings.groupNames.value && this.settings.groupNames.value.toString().toLowerCase().includes(username.toLowerCase())) {
+                this.log(`Trade request from ${username} is a group member, allowing.`);
+                return;
+            }
+
+            this.log(`Trade request intercepted from ${username}, blocking for iron player`);
+            
+            // Find the chat container to inject the new message
+            const chatContainer = document.querySelector('#hs-public-message-list');
+            
+            if (!chatContainer) {
+                this.log("Chat container not found when trying to inject blocked trade message");
+                return;
+            }
+
+            // Remove the original trade message
+            messageElement.remove();
+
+            // Create the replacement message
+            const newMessageElement = document.createElement('li');
+            const messageContainer = document.createElement('div');
+            messageContainer.className = 'hs-chat-message-container';
+            
+            const messageSpan = document.createElement('span');
+            messageSpan.className = 'hs-text--red hs-chat-menu__message-text-container';
+            messageSpan.textContent = `${username} attempted to trade you, but you stand alone.`;
+            
+            messageContainer.appendChild(messageSpan);
+            newMessageElement.appendChild(messageContainer);
+            
+            // Add to bottom of chat
+            chatContainer.appendChild(newMessageElement);
+            
+        } catch (error) {
+            this.log(`Error handling trade message: ${error}`);
         }
     }
 
