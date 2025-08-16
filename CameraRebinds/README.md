@@ -67,7 +67,7 @@ Example-Plugin/
 
 ### Plugin Configuration
 
-The main plugin class extends the base `Plugin` class from `@highlite/plugin-api`:
+The main plugin class extends the base `Plugin` class from `@highlite/core`:
 
 ```typescript
 class ExamplePlugin extends Plugin {

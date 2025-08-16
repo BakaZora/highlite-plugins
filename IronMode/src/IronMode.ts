@@ -1,5 +1,5 @@
-import {Plugin, SettingsTypes} from "@highlite/plugin-api";
-import { PanelManager } from "@highlite/plugin-api";
+import {Plugin, SettingsTypes} from '@highlite/core';
+import { PanelManager } from '@highlite/core';
 import IronModeCss from "../resources/css/ironmode.css";
 
 // Import regular iron helm icons

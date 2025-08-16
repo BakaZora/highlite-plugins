@@ -9,8 +9,10 @@
   },
   "main": "src/ExamplePlugin.ts",
   "devDependencies": {
-    "@highlite/plugin-api": "^1.0.13",
     "esbuild": "^0.25.8",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@highlite/core": "^2.1.1"
   }
 }
