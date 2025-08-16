@@ -499,22 +499,20 @@ export default class IronMode extends Plugin {
         }
         
         try {
-            const response = await fetch('https://highl1te-hardcore-api.bgscrew.com/IronStatus/lookup', {
-                method: 'POST',
+            const url = `https://highl1te-hardcore-api.bgscrew.com/IronStatus?username=${encodeURIComponent(normalizedUsername)}`;
+            const response = await fetch(url, {
+                method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
-                },
-                body: JSON.stringify([normalizedUsername])
+                }
             });
-            
-            const data = await response.json();
-            const status = data[normalizedUsername] || null;
+            const data = await response.text();
+            const status = data || null;
 
             // Cache the result
             if (status) {
                 this.playerStatusCache.set(normalizedUsername, { status, timestamp: now });
             }
-            
             return status;
         } catch (error) {
             return null;
