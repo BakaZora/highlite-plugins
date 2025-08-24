@@ -4,15 +4,15 @@ import IronModeCss from "../resources/css/ironmode.css";
 
 // Import regular iron helm icons
 import IMHelm from "../resources/images/IMHelm.png";
-import HCIMHelm from "../resources/images/HCIMHelm.png"; //TODO
-import UIMHelm from "../resources/images/UIMHelm.png"; //TODO
-import HCUIMHelm from "../resources/images/HCUIMHelm.png"; //TODO
+import HCIMHelm from "../resources/images/HCIMHelm.png";
+import UIMHelm from "../resources/images/UIMHelm.png";
+import HCUIMHelm from "../resources/images/HCUIMHelm.png";
 
 // Import group iron helm icons
 import GIMHelm from "../resources/images/GIMHelm.png";
-import HCGIMHelm from "../resources/images/HCGIMHelm.png"; //TODO
-import UGIMHelm from "../resources/images/UGIMHelm.png"; //TODO
-import HCUGIMHelm from "../resources/images/HCUGIMHelm.png"; //TODO
+import HCGIMHelm from "../resources/images/HCGIMHelm.png";
+import UGIMHelm from "../resources/images/UGIMHelm.png";
+import HCUGIMHelm from "../resources/images/HCUGIMHelm.png";
 
 export default class IronMode extends Plugin {
     panelManager: PanelManager = new PanelManager();
@@ -22,20 +22,11 @@ export default class IronMode extends Plugin {
     private contextMenuObserver: MutationObserver | null = null;
     private playerStatusCache: Map<string, { status: string; timestamp: number }> = new Map(); // Cache for username -> {status, timestamp}
     private updateInterval: number | null = null;
-    private readonly CACHE_TTL = 15 * 60 * 1000; // 15 minutes in milliseconds
+    private readonly CACHE_TTL = 10 * 60 * 1000; // 10 minutes in milliseconds
     private updateButtonCooldownTimeout: number | null = null;
 
     constructor() {
         super()
-        this.settings.alertMessage = {
-            text: 'Notice!',
-            type: SettingsTypes.warning,
-            value: 'If you enable "Show Helm icons in chat" and "I am an Iron", your username and iron settings are stored for chat functionality.',
-            disabled: false,
-            hidden: false,
-            callback: () => {},
-        };
-
         this.settings.disclaimerMessage = {
             text: 'Disclaimer!',
             type: SettingsTypes.info,
@@ -45,34 +36,50 @@ export default class IronMode extends Plugin {
             callback: () => {},
         };
 
-        this.settings.sendRecieveData = {
-            text: 'Show Helms in Chat',
-            type: SettingsTypes.checkbox,
-            value: false,
-            callback: () => {
-                if (this.settings.sendRecieveData.value) {
-                    this.startPeriodicUpdates();
-                } else {
-                    this.stopPeriodicUpdates();
-                }
-            },
-            onLoaded: () => {
-                if (this.settings.sendRecieveData.value) {
-                    this.startPeriodicUpdates();
-                }
-            }, 
-        };
-
         this.settings.isIron = {
             text: 'I am an Iron',
             type: SettingsTypes.checkbox,
             value: false,
             callback: () => {
                 this.handleViewIronSettings(this.settings.isIron.value as boolean);
+                if (!this.settings.isIron.value && this.settings.shareHelmStatus.value) {
+                    // If player was sharing helm status, but is now no longer an iron
+                    // Wipe player status from database, as no longer iron
+                    this.clearPlayerStatusData();
+                }
             },
             onLoaded: () => {
                 this.handleViewIronSettings(this.settings.isIron.value as boolean);
             },
+        };
+
+        this.settings.alertMessage = {
+            text: 'Notice!',
+            type: SettingsTypes.warning,
+            value: 'If you enable "Share Helm Status", your username and iron settings are stored in a remote database for chat functionality.',
+            disabled: false,
+            hidden: true, // Initially hidden until isIron is true
+            callback: () => {},
+        };
+
+        this.settings.shareHelmStatus = {
+            text: 'Share Helm Status',
+            type: SettingsTypes.checkbox,
+            value: false,
+            hidden: true, // Initially hidden until isIron is true
+            callback: () => {
+                if (this.settings.shareHelmStatus.value) {
+                    this.startPeriodicUpdates();
+                } else {
+                    this.clearPlayerStatusData(); // Wipe player status from database
+                    this.stopPeriodicUpdates(); 
+                }
+            },
+            onLoaded: () => {
+                if (this.settings.shareHelmStatus.value) {
+                    this.startPeriodicUpdates();
+                }
+            }, 
         };
 
         this.settings.isUltimate = {
@@ -107,16 +114,16 @@ export default class IronMode extends Plugin {
             hidden: true, // Initially hidden until isIron is true
             callback: () => {
                 this.log("Manual update triggered");
-                this.updatePlayerStatusData(); // POST user data to database
+                if (this.settings.shareHelmStatus.value) {
+                    this.updatePlayerStatusData(); // POST user data to database
+                }
                 this.playerStatusCache.clear(); // Clear cache
                 
                 // Disable button and start cooldown
                 this.settings.updateButton.disabled = true;
-                this.settings.updateButton.value = 'Please wait 5 minutes';
                 
                 this.updateButtonCooldownTimeout = setTimeout(() => {
                     this.settings.updateButton.disabled = false;
-                    this.settings.updateButton.value = 'Update';
                     this.updateButtonCooldownTimeout = null;
                 }, 60 * 1000); // 1 minute
             },
@@ -144,11 +151,15 @@ export default class IronMode extends Plugin {
 
     private handleViewIronSettings(isIron: boolean): void {
         if (isIron) {
+            this.settings.alertMessage.hidden = false;
+            this.settings.shareHelmStatus.hidden = false;
             this.settings.isUltimate.hidden = false;
             this.settings.isHardcore.hidden = false;
             this.settings.groupNames.hidden = false;
             this.settings.updateButton.hidden = false;
         } else {
+            this.settings.alertMessage.hidden = true;
+            this.settings.shareHelmStatus.hidden = true;
             this.settings.isUltimate.hidden = true;
             this.settings.isHardcore.hidden = true;
             this.settings.groupNames.hidden = true;
@@ -182,8 +193,8 @@ export default class IronMode extends Plugin {
         this.initializeChatObserver();
         this.initializeContextMenuObserver();
         
-        // Start the periodic update cycle if helm display is enabled
-        if (this.settings.sendRecieveData.value) {
+        // Start the periodic update cycle if share helm is enabled
+        if (this.settings.shareHelmStatus.value) {
             this.startPeriodicUpdates();
         }
     }
@@ -206,15 +217,13 @@ export default class IronMode extends Plugin {
 
     // Start periodic updates for player status data
     private startPeriodicUpdates(): void {
-        if (this.playerStatusCache.size === 0) {
-            this.log("No player status data available, fetching initial data...");
-            this.updatePlayerStatusData();
-        }
+        // Initial update
+        this.updatePlayerStatusData();
         
         // Set up periodic updates every 5 minutes
         if (!this.updateInterval) {
             this.updateInterval = setInterval(() => {
-                if (this.settings.sendRecieveData.value) {
+                if (this.settings.shareHelmStatus.value) {
                     this.updatePlayerStatusData();
                 }
             }, 5 * 60 * 1000); // 5 minutes
@@ -263,22 +272,20 @@ export default class IronMode extends Plugin {
         // Create a MutationObserver to watch for new chat messages
         this.chatObserver = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
-                if (this.settings.sendRecieveData.value) {
-                    mutation.addedNodes.forEach((node) => {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            const element = node as Element;
-                            
-                            // Check if this is a chat message container
-                            if (element.classList.contains('hs-chat-message-container')) {
-                                this.processChatMessage(element);
-                            }
-                            
-                            // Also check for chat messages that might be added within added nodes
-                            const chatMessages = element.querySelectorAll('.hs-chat-message-container');
-                            chatMessages.forEach(msg => this.processChatMessage(msg));
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        const element = node as Element;
+                        
+                        // Check if this is a chat message container
+                        if (element.classList.contains('hs-chat-message-container')) {
+                            this.processChatMessage(element);
                         }
-                    });
-                }
+                        
+                        // Also check for chat messages that might be added within added nodes
+                        const chatMessages = element.querySelectorAll('.hs-chat-message-container');
+                        chatMessages.forEach(msg => this.processChatMessage(msg));
+                    }
+                });
             });
         });
 
@@ -521,11 +528,12 @@ export default class IronMode extends Plugin {
 
 
     private async updatePlayerStatusData(): Promise<void> {
-        this.log("Updating player status data...");
-        // Get players name from hook
-        const normalizedUsername = this.gameHooks.EntityManager.Instance.MainPlayer._name.toLowerCase();
+        this.log(`Updating iron status for user ${String(this.settings.uuid.value).split('-')[0]}, sending player settings to database...`);
 
         try {
+            // Get players name from hook
+            const normalizedUsername = this.gameHooks.EntityManager.Instance.MainPlayer._name.toLowerCase();
+
             // Collect player settings data
             const playerSettings = {
                 username: normalizedUsername,
@@ -549,7 +557,43 @@ export default class IronMode extends Plugin {
             });
 
         } catch (error) {
-            this.log(`Error fetching player status data: ${error}`);
+            this.log(`Error updating player status data: ${error}`);
+        }
+    }
+
+    private async clearPlayerStatusData(): Promise<void> {
+        this.log(`Clearing player status data from database for user ${String(this.settings.uuid.value).split('-')[0]}...`);
+
+        try {
+            // Get players name from hook
+            const normalizedUsername = this.gameHooks.EntityManager.Instance.MainPlayer._name.toLowerCase();
+
+            // Collect player settings data
+            const playerSettings = {
+                username: normalizedUsername,
+                uuid: this.settings.uuid.value,
+                isIron: false,
+                isHardcore: false,
+                isUltimate: false,
+                groupMates: [],
+            };
+
+            // Parse playerSettings into a json to send to server
+            const playerSettingsJson = JSON.stringify(playerSettings);
+
+            // POST to database
+            await fetch('http://highl1te-hardcore-api.bgscrew.com/IronStatus', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: playerSettingsJson
+            });
+
+            this.playerStatusCache.clear(); // Clear local cache to ensure the players helmet is removed, for immediate user-testing
+
+        } catch (error) {
+            this.log(`Error clearing player status data: ${error}`);
         }
     }
 
@@ -640,26 +684,8 @@ export default class IronMode extends Plugin {
 }
 
 /*
-TODO:
-POST to database function, called every 5 minutes while showing helms is true.
-- Also called on death (after updating settings).
-- Called with manual button too that puts it in 5 min cooldown
-- Send all settings to the database, including uuid as key
-- ENSURE DATA IS CLEANSED IN LAMBDA
-- ENSURE THERES A CHARACTER LIMIT ON STRINGS (Make it long so people can have massive groups of players, maybe like 1000 characters?)
-
-GET from database function, called every 5 minutes while show helms is true (could this just be a return from the POST?)
-- Get call to database, returns a list of usernames and their iron status (IM, HCIM, UIM, HCUIM, GIM, HCCGIM, UGIM, HCUGIM)
-  - This will be determined by the settings of the user and calculated inside the GET function on the lambda, so if they are an iron, it will return their status
-- Different helmet icon and colour per iron status:
-  - regular irons = full helm // group irons = med helm
-  - iron = iron // hardcore = pig iron // ultimate = silver // hcuim = palladium
-- Store list locally for user
-- Insert helmet next to username in chat for player if show helms is true
-
+Features to add:
 Track if a player has died and set the hasDied setting to true, as well as disabling it
-
-Remove trade for all players (except group mates) if isIron is true
 
 Remove bank options for players if isUltimate is true
 */
